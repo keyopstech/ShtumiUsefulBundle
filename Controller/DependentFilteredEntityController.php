@@ -3,63 +3,120 @@
 namespace Shtumi\UsefulBundle\Controller;
 
 use Symfony\Bundle\FrameworkBundle\Controller\Controller;
+
 use Sensio\Bundle\FrameworkExtraBundle\Configuration\Route;
 use Sensio\Bundle\FrameworkExtraBundle\Configuration\Template;
 
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\Security\Core\Exception\AccessDeniedException;
+use Symfony\Component\Translation\TranslatorInterface;
 
 use Symfony\Component\HttpFoundation\Response;
 
+
 class DependentFilteredEntityController extends Controller
 {
+    /**
+     * @var array
+     */
+    private $options = array();
 
+    /**
+     * @var TranslatorInterfacde $translator
+     */
+    private $translator;
+
+    /**
+     * @var string
+     */
+    private $html;
+
+    /**
+     * @param Request $request
+     * @return Response
+     * @throws \Exception
+     */
     public function getOptionsAction(Request $request)
     {
+        $this->fetchOptionsInContainer($request);
+        $this->translator = $this->get('translator');
 
-        $em = $this->getDoctrine()->getManager();
-        $translator = $this->get('translator');
-
-        $entity_alias = $request->get('entity_alias');
-        $parent_id = $request->get('parent_id');
-        $empty_value = $request->get('empty_value');
-        $translateValue = $request->get('translate_value');
-        $entities = $this->get('service_container')->getParameter('shtumi.dependent_filtered_entities');
-        $entity_inf = $entities[$entity_alias];
-
-        if ($entity_inf['role'] !== 'IS_AUTHENTICATED_ANONYMOUSLY') {
-            if (false === $this->get('security.context')->isGranted($entity_inf['role'])) {
+        if ($this->options['entity_inf']['role'] !== 'IS_AUTHENTICATED_ANONYMOUSLY') {
+            if (false === $this->get('security.context')->isGranted($this->options['entity_inf']['role'])) {
                 throw new AccessDeniedException();
             }
         }
 
-        if (null !== $entity_inf['callback'] && preg_match('/^(.*)::([a-z]*)$/i', $entity_inf['callback'], $fcdnMatches) === 1) {
-            $results = $this->getResultsWithPersonnalizedCallback($fcdnMatches, $parent_id);
+        if (null !== $this->options['entity_inf']['callback'] && preg_match('/^(.*)::([a-z]*)$/i', $this->options['entity_inf']['callback'], $fcdnMatches) === 1) {
+            $results = $this->getResultsWithPersonnalizedCallback($fcdnMatches, $this->options['parent_id']);
         } else {
-            $results = $this->getResultsWithQueryBuilderAndPotentiallyRepositoryCallBack($entity_inf, $parent_id);
+            $results = $this->getResultsWithQueryBuilderAndPotentiallyRepositoryCallBack($this->options['entity_inf'], $this->options['parent_id']);
         }
 
         if (empty($results)) {
-            return new Response('<option value="">' . $translator->trans($entity_inf['no_result_msg']) . '</option>');
+            return new Response('<option value="">' . $this->translator->trans($this->options['entity_inf']['no_result_msg']) . '</option>');
         }
 
-        $html = '';
-        if ($empty_value !== false)
-            $html .= '<option value="">' . $translator->trans($empty_value) . '</option>';
+        $this->makeHtmlWithResults($results);
 
-        $getter = $this->getGetterName($entity_inf['property']);
-
-        foreach ($results as $result) {
-            if ($entity_inf['property'])
-                $res = $result->$getter();
-            else $res = (string)$result;
-            $res = $translateValue ? $res : $this->get('translator')->trans($res);
-            $html = $html . sprintf("<option value=\"%d\">%s</option>", $result->getId(), $res);
-        }
-
-        return new Response($html);
-
+        return new Response($this->html);
     }
+
+    /**
+     * @param array $results
+     */
+    private function makeHtmlWithResults(array $results)
+    {
+        if ($this->options['empty_value'] !== false)
+            $this->html .= '<option value="">' . $this->translator->trans($this->options['empty_value']) . '</option>';
+
+        $this->transformResultsInOptions($results);
+    }
+
+
+    /**
+     * @param array $results
+     * @return void
+     */
+    private function transformResultsInOptions($results)
+    {
+        foreach ($results as $key => $result) {
+            if (is_array($result)) {
+                $this->html .= '<optgroup label="' . $key . '">';
+                $this->transformResultsInOptions($result);
+                $this->html .= '</optgroup>';
+            }
+
+            if(is_object($result)) {
+                if ($this->options['entity_inf']['property']) {
+                    $getter = $this->options['getterName'];
+                    $res = $result->$getter();
+                } else {
+                    $res = (string)$result;
+                }
+
+                $res = $this->options['translateValue'] ? $res : $this->get('translator')->trans($res);
+                $this->html .= '<option value="' . $result->getId() . '">' . $res . '</option>';
+
+            }
+        }
+    }
+
+
+    /**
+     * @param Request $request
+     */
+    private function fetchOptionsInContainer(Request $request)
+    {
+        $this->options['entity_alias'] = $request->get('entity_alias');
+        $this->options['parent_id'] = $request->get('parent_id');
+        $this->options['empty_value'] = $request->get('empty_value');
+        $this->options['translateValue'] = $request->get('translate_value');
+        $this->options['entities'] = $this->get('service_container')->getParameter('shtumi.dependent_filtered_entities');
+        $this->options['entity_inf'] = $this->options['entities'][$request->get('entity_alias')];
+        $this->options['getterName'] = $this->getGetterName($this->options['entity_inf']['property']);
+    }
+
 
 
     private function getResultsWithQueryBuilderAndPotentiallyRepositoryCallBack($entity_inf, $parent_id)
@@ -154,7 +211,6 @@ class DependentFilteredEntityController extends Controller
         }
 
         return $name;
-
     }
 
     /**
